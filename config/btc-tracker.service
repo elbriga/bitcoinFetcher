@@ -1,0 +1,29 @@
+[Unit]
+Description=Bitcoin & USD Price Collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Usuário não-root (RECOMENDADO)
+User=btc
+Group=btc
+
+WorkingDirectory=/opt/btc-tracker
+
+#ExecStart=/usr/bin/env npx tsx index.ts
+ExecStart=npm start
+
+Restart=always
+RestartSec=5
+
+# Ambiente
+Environment=NODE_ENV=production
+
+# Logs no journal
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
