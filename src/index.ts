@@ -1,22 +1,25 @@
 import axios from "axios";
-import sqlite3 from "sqlite3";
+import Database from "better-sqlite3";
 
 // === CONFIG ===
 const DB_FILE = "./prices.db";
 
 // === DATABASE ===
-const db = new sqlite3.Database(DB_FILE);
+const db = new Database(DB_FILE);
 
-db.serialize(() => {
-  db.run(`
-    CREATE TABLE IF NOT EXISTS prices (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      timestamp TEXT NOT NULL UNIQUE,
-      btc_usd REAL NOT NULL,
-      usd_brl REAL NOT NULL
-    )
-  `);
-});
+// Performance + segurança adequadas para coletor contínuo
+db.pragma("journal_mode = WAL");
+db.pragma("synchronous = NORMAL");
+
+// Schema
+db.exec(`
+  CREATE TABLE IF NOT EXISTS prices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL UNIQUE,
+    btc_usd REAL NOT NULL,
+    usd_brl REAL NOT NULL
+  )
+`);
 
 // === TIME HELPERS ===
 function currentMinuteISO(): string {
@@ -50,38 +53,33 @@ async function fetchDollarPrice(): Promise<number> {
 }
 
 // === DB HELPERS ===
-function hasPriceForMinute(timestamp: string): Promise<boolean> {
-  return new Promise((resolve, reject) => {
-    db.get(
-      `SELECT 1 FROM prices WHERE timestamp = ? LIMIT 1`,
-      [timestamp],
-      (err, row) => {
-        if (err) reject(err);
-        else resolve(!!row);
-      },
-    );
-  });
+const hasPriceStmt = db.prepare(
+  `SELECT 1 FROM prices WHERE timestamp = ? LIMIT 1`,
+);
+
+function hasPriceForMinute(timestamp: string): boolean {
+  return !!hasPriceStmt.get(timestamp);
 }
 
+const insertStmt = db.prepare(`
+  INSERT INTO prices (timestamp, btc_usd, usd_brl)
+  VALUES (?, ?, ?)
+`);
+
 function insertPrice(timestamp: string, btcUsd: number, usdBrl: number): void {
-  db.run(
-    `INSERT INTO prices (timestamp, btc_usd, usd_brl)
-     VALUES (?, ?, ?)`,
-    [timestamp, btcUsd, usdBrl],
-  );
+  insertStmt.run(timestamp, btcUsd, usdBrl);
 }
 
 // === MAIN JOB ===
 async function collectPrices(): Promise<void> {
   const timestamp = currentMinuteISO();
 
-  try {
-    const alreadyExists = await hasPriceForMinute(timestamp);
-    if (alreadyExists) {
-      console.log(`[${timestamp}] Já existe cotação, pulando este minuto`);
-      return;
-    }
+  if (hasPriceForMinute(timestamp)) {
+    console.log(`[${timestamp}] Já existe cotação, pulando este minuto`);
+    return;
+  }
 
+  try {
     const [btcUsd, usdBrl] = await Promise.all([
       fetchBitcoinPrice(),
       fetchDollarPrice(),
@@ -103,12 +101,18 @@ async function collectPrices(): Promise<void> {
 async function start(): Promise<void> {
   await collectPrices();
 
-  const delay = msUntilNextMinute();
   setTimeout(() => {
     collectPrices();
     setInterval(collectPrices, 60_000);
-  }, delay);
+  }, msUntilNextMinute());
 }
+
+// === SHUTDOWN CLEAN ===
+process.on("SIGINT", () => {
+  console.log("Encerrando...");
+  db.close();
+  process.exit(0);
+});
 
 // === START ===
 start();
