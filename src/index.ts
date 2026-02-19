@@ -1,25 +1,20 @@
 import axios from "axios";
-import Database from "better-sqlite3";
+import admin, { ServiceAccount } from "firebase-admin";
+import serviceAccountJson from "../serviceAccountKey.json" with { type: "json" };
+
+const serviceAccount = serviceAccountJson as ServiceAccount;
+const HTTP_TIMEOUT_MS = 15000;
 
 // === CONFIG ===
-const DB_FILE = "./prices.db";
+// ATENÇÃO: Configure o Firebase antes de executar
+// Crie um arquivo "serviceAccountKey.json" na raiz do projeto
+// com as credenciais de sua conta de serviço do Firebase.
 
-// === DATABASE ===
-const db = new Database(DB_FILE);
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 
-// Performance + segurança adequadas para coletor contínuo
-db.pragma("journal_mode = WAL");
-db.pragma("synchronous = NORMAL");
-
-// Schema
-db.exec(`
-  CREATE TABLE IF NOT EXISTS prices (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp TEXT NOT NULL UNIQUE,
-    btc_usd REAL NOT NULL,
-    usd_brl REAL NOT NULL
-  )
-`);
+const db = admin.firestore();
 
 // === TIME HELPERS ===
 function currentMinuteISO(): string {
@@ -34,47 +29,51 @@ function msUntilNextMinute(): number {
 }
 
 // === FETCH FUNCTIONS ===
+async function fetchWithTimeout<T = unknown>(url: string): Promise<T> {
+  const response = await axios.get<T>(url, { timeout: HTTP_TIMEOUT_MS });
+  return response.data;
+}
+
 async function fetchBitcoinPrice(): Promise<number> {
-  const res = await axios.get<{
+  const data = await fetchWithTimeout<{
     bitcoin: { usd: number };
   }>(
     "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
   );
 
-  return res.data.bitcoin.usd;
+  return data.bitcoin.usd;
 }
 
 async function fetchDollarPrice(): Promise<number> {
-  const res = await axios.get<{
+  const data = await fetchWithTimeout<{
     rates: { BRL: number };
   }>("https://api.frankfurter.dev/v1/latest?base=USD&symbols=BRL");
 
-  return res.data.rates.BRL;
+  return data.rates.BRL;
 }
 
 // === DB HELPERS ===
-const hasPriceStmt = db.prepare(
-  `SELECT 1 FROM prices WHERE timestamp = ? LIMIT 1`,
-);
-
-function hasPriceForMinute(timestamp: string): boolean {
-  return !!hasPriceStmt.get(timestamp);
+async function hasPriceForMinute(timestamp: string): Promise<boolean> {
+  const doc = await db.collection("prices").doc(timestamp).get();
+  return doc.exists;
 }
 
-const insertStmt = db.prepare(`
-  INSERT INTO prices (timestamp, btc_usd, usd_brl)
-  VALUES (?, ?, ?)
-`);
-
-function insertPrice(timestamp: string, btcUsd: number, usdBrl: number): void {
-  insertStmt.run(timestamp, btcUsd, usdBrl);
+async function insertPrice(
+  timestamp: string,
+  btcUsd: number,
+  usdBrl: number,
+): Promise<void> {
+  await db.collection("prices").doc(timestamp).set({
+    btc_usd: btcUsd,
+    usd_brl: usdBrl,
+  });
 }
 
 // === MAIN JOB ===
 async function collectPrices(): Promise<void> {
   const timestamp = currentMinuteISO();
 
-  if (hasPriceForMinute(timestamp)) {
+  if (await hasPriceForMinute(timestamp)) {
     console.log(`[${timestamp}] Já existe cotação, pulando este minuto`);
     return;
   }
@@ -85,7 +84,7 @@ async function collectPrices(): Promise<void> {
       fetchDollarPrice(),
     ]);
 
-    insertPrice(timestamp, btcUsd, usdBrl);
+    await insertPrice(timestamp, btcUsd, usdBrl);
 
     console.log(`[${timestamp}] BTC/USD=${btcUsd} | USD/BRL=${usdBrl}`);
   } catch (err) {
@@ -110,7 +109,7 @@ async function start(): Promise<void> {
 // === SHUTDOWN CLEAN ===
 process.on("SIGINT", () => {
   console.log("Encerrando...");
-  db.close();
+  // O SDK do Firebase Admin gerencia as conexões automaticamente
   process.exit(0);
 });
 
