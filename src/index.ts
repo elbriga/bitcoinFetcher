@@ -83,7 +83,6 @@ async function deletePricesOlderThan24h(): Promise<void> {
     .limit(100);
 
   try {
-    //let deletedCount = 0;
     while (true) {
       const snapshot = await query.get();
       if (snapshot.empty) {
@@ -94,16 +93,11 @@ async function deletePricesOlderThan24h(): Promise<void> {
         batch.delete(doc.ref);
       });
       await batch.commit();
-      //deletedCount += snapshot.docs.length;
-      //console.log(`Deleted ${snapshot.docs.length} old price entries`);
       // If we got fewer docs than limit, we're done
       if (snapshot.docs.length < 100) {
         break;
       }
     }
-    // if (deletedCount > 0) {
-    //   console.log(`Total deleted ${deletedCount} prices older than 24h`);
-    // }
   } catch (err) {
     console.error(
       "Error deleting old prices:",
