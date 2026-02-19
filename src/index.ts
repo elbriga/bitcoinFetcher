@@ -23,6 +23,12 @@ function currentMinuteISO(): string {
   return now.toISOString();
 }
 
+function minutesAgoISO(minutes: number): string {
+  const date = new Date(Date.now() - minutes * 60 * 1000);
+  date.setSeconds(0, 0);
+  return date.toISOString();
+}
+
 function msUntilNextMinute(): number {
   const now = new Date();
   return (60 - now.getSeconds()) * 1000 - now.getMilliseconds();
@@ -49,7 +55,7 @@ async function fetchDollarPrice(): Promise<number> {
     rates: { BRL: number };
   }>("https://api.frankfurter.dev/v1/latest?base=USD&symbols=BRL");
 
-  return data.rates.BRL;
+  return data.rates?.BRL ?? 0.0;
 }
 
 // === DB HELPERS ===
@@ -69,12 +75,45 @@ async function insertPrice(
   });
 }
 
+async function deletePricesOlderThan24h(): Promise<void> {
+  const cutoff = minutesAgoISO(24 * 60); // 24 hours ago
+  const pricesRef = db.collection("prices");
+  const query = pricesRef.where(admin.firestore.FieldPath.documentId(), '<', cutoff).limit(100);
+
+  try {
+    let deletedCount = 0;
+    while (true) {
+      const snapshot = await query.get();
+      if (snapshot.empty) {
+        break;
+      }
+      const batch = db.batch();
+      snapshot.docs.forEach(doc => {
+        batch.delete(doc.ref);
+      });
+      await batch.commit();
+      deletedCount += snapshot.docs.length;
+      console.log(`Deleted ${snapshot.docs.length} old price entries`);
+      // If we got fewer docs than limit, we're done
+      if (snapshot.docs.length < 100) {
+        break;
+      }
+    }
+    if (deletedCount > 0) {
+      console.log(`Total deleted ${deletedCount} prices older than 24h`);
+    }
+  } catch (err) {
+    console.error("Error deleting old prices:", err instanceof Error ? err.message : err);
+  }
+}
+
 // === MAIN JOB ===
 async function collectPrices(): Promise<void> {
   const timestamp = currentMinuteISO();
 
   if (await hasPriceForMinute(timestamp)) {
     console.log(`[${timestamp}] Já existe cotação, pulando este minuto`);
+    await deletePricesOlderThan24h();
     return;
   }
 
@@ -85,6 +124,7 @@ async function collectPrices(): Promise<void> {
     ]);
 
     await insertPrice(timestamp, btcUsd, usdBrl);
+    await deletePricesOlderThan24h();
 
     console.log(`[${timestamp}] BTC/USD=${btcUsd} | USD/BRL=${usdBrl}`);
   } catch (err) {
