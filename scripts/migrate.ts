@@ -4,6 +4,22 @@ import serviceAccountJson from "../serviceAccountKey.json" with { type: "json" }
 
 const serviceAccount = serviceAccountJson as ServiceAccount;
 
+type TransactionRow = {
+  id: number;
+  type: string; // ajuste se for number
+  from: string;
+  to: string;
+  amount: number;
+  price: number;
+  timestamp: string;
+};
+
+const user_id = process.argv[2];
+if (user_id == "") {
+  console.log("Digite o ID do usuario!");
+  process.exit(1);
+}
+
 // Initialize Firebase Admin
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -12,7 +28,7 @@ admin.initializeApp({
 const db = admin.firestore();
 
 // Path to your SQLite database file
-const SQLITE_DB_PATH = process.argv[2] || "./database.sqlite";
+const SQLITE_DB_PATH = "btc_trainer.db";
 
 console.log(`Starting migration from ${SQLITE_DB_PATH}...`);
 
@@ -27,21 +43,27 @@ sqliteDb.all("SELECT * FROM transactions", async (err, rows) => {
 
   console.log(`Found ${rows.length} rows to migrate.`);
 
+  const transactionsRef = db
+    .collection("users")
+    .doc(user_id)
+    .collection("transactions");
+  const snapshot = await transactionsRef.get();
+  for (const doc of snapshot.docs) {
+    await doc.ref.delete();
+  }
+  console.log(`Deleted ${snapshot.size} OLD transactions`);
+
   // Individual inserts instead of batching
-  for (const row of rows) {
-    console.log("ROW: " + row);
-    /*
-    if (row.timestamp && typeof row.btc_usd === 'number' && typeof row.usd_brl === 'number') {
-      await db.collection("prices").doc(row.timestamp).set({
-        btc_usd: row.btc_usd,
-        usd_brl: row.usd_brl,
-        migrated_at: admin.firestore.FieldValue.serverTimestamp()
-      });
-      console.log(`Migrated: ${row.timestamp}`);
-    } else {
-      console.warn(`Skipping invalid row: ${JSON.stringify(row)}`);
-    }
-    */
+  for (const row of rows as TransactionRow[]) {
+    console.dir(row);
+
+    await db
+      .collection("users")
+      .doc(user_id)
+      .collection("transactions")
+      .add(row);
+
+    console.log(`Migrated: ${row["id"]}`);
   }
 
   sqliteDb.close();
