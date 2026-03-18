@@ -15,7 +15,7 @@ type TransactionRow = {
 };
 
 const user_id = process.argv[2];
-if (user_id == "") {
+if (user_id == undefined) {
   console.log("Digite o ID do usuario!");
   process.exit(1);
 }
